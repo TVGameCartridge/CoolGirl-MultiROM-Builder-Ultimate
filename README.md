@@ -30,7 +30,7 @@ This is a high-performance, classic-style NES (Nintendo Entertainment System) ga
 Modify the look using **YY-CHR** or **NESST** in the resources folder:
 * `menu_symbols.png`, `menu_header.png`, `menu_sprites.png`.
 
-## Recommended Tools (Included in /tools)
+## Recommended Tools (Included in /NES tools)
 
 * **YY-CHR**: Graphics editing.
 * **NESST (NES Screen Tool)**: UI design.
