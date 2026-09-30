@@ -2,6 +2,7 @@
 #include "types.h"
 #include "debug.h"
 #include "fceu.h"
+#include "drivers/win/main.h"
 
 #include <windows.h>
 #include <stdio.h>
@@ -10,7 +11,6 @@
 #include <string>
 
 static std::string g_menuPath;
-static std::string g_pendingPath;
 static bool g_menuActive = false;
 static bool g_launchGuard = false;
 static bool g_rWasDown = false;
@@ -147,7 +147,6 @@ static bool extractGame(unsigned id, std::string &out)
 void CGEMU342_Init(const char *baseDirectory)
 {
     g_menuPath.clear();
-    g_pendingPath.clear();
     g_menuActive = false;
     g_launchGuard = false;
     g_rWasDown = false;
@@ -178,7 +177,14 @@ void CGEMU342_OnRomLoaded(const char *name)
     }
 }
 
-void CGEMU342_Poll()
+static bool loadRomExactlyLikeLua(const std::string &path)
+{
+    if (!ALoad(path.c_str())) return false;
+    CGEMU342_OnRomLoaded(path.c_str());
+    return true;
+}
+
+void CGEMU342_FrameBoundary()
 {
     const bool rDown = (GetAsyncKeyState('R') & 0x8000) != 0;
     if (rDown && !g_rWasDown && !g_menuPath.empty())
@@ -186,42 +192,29 @@ void CGEMU342_Poll()
         DWORD attrs = GetFileAttributesA(g_menuPath.c_str());
         if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY))
         {
-            g_pendingPath = g_menuPath;
-            g_menuActive = false;
+            loadRomExactlyLikeLua(g_menuPath);
             g_launchGuard = false;
         }
     }
     g_rWasDown = rDown;
 
-    if (!g_menuActive || !g_pendingPath.empty()) return;
+    if (!g_menuActive) return;
 
-    // Match the original Lua launcher exactly: memory.readbyte() uses GetMem(),
-    // which peeks without advancing the emulated CPU clock.
     const uint8 magic = GetMem(0x07F2);
     if (magic == 0xA5 && !g_launchGuard)
     {
         g_launchGuard = true;
         const unsigned id = (unsigned)GetMem(0x07F0) | ((unsigned)GetMem(0x07F1) << 8);
-        // Match memory.writebyte(): call the active write handler directly, with no extra CPU cycle.
         BWrite[0x07F2](0x07F2, 0);
 
-        std::string extracted;
-        if (extractGame(id, extracted))
-        {
-            g_pendingPath = extracted;
-            g_menuActive = false;
-        }
+        std::string romfile;
+        if (extractGame(id, romfile))
+            loadRomExactlyLikeLua(romfile);
+
+        g_launchGuard = false;
     }
     else if (magic != 0xA5)
     {
         g_launchGuard = false;
     }
-}
-
-bool CGEMU342_TakePendingLoad(std::string &path)
-{
-    if (g_pendingPath.empty()) return false;
-    path = g_pendingPath;
-    g_pendingPath.clear();
-    return true;
 }
