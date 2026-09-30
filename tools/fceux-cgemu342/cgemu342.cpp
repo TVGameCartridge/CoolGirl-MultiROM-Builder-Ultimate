@@ -14,6 +14,11 @@ static std::string g_menuPath;
 static bool g_menuActive = false;
 static bool g_launchGuard = false;
 static bool g_rWasDown = false;
+static bool g_pendingLaunch = false;
+static unsigned g_pendingId = 0;
+static unsigned char g_legacyLo = 0;
+static unsigned char g_legacyHi = 0;
+static int g_loaderSeq = 0;
 
 static uint16_t rd16(const unsigned char *p)
 {
@@ -150,6 +155,10 @@ void CGEMU342_Init(const char *baseDirectory)
     g_menuActive = false;
     g_launchGuard = false;
     g_rWasDown = false;
+    g_pendingLaunch = false;
+    g_pendingId = 0;
+    g_legacyLo = g_legacyHi = 0;
+    g_loaderSeq = 0;
 
     if (baseDirectory && *baseDirectory)
     {
@@ -169,11 +178,58 @@ void CGEMU342_OnRomLoaded(const char *name)
         g_menuPath = name;
         g_menuActive = true;
         g_launchGuard = false;
+        g_pendingLaunch = false;
+        g_loaderSeq = 0;
     }
     else
     {
         g_menuActive = false;
         g_launchGuard = false;
+        g_pendingLaunch = false;
+        g_loaderSeq = 0;
+    }
+}
+
+static void queueLaunch(unsigned id)
+{
+    if (!g_menuActive || g_pendingLaunch) return;
+    g_pendingId = id;
+    g_pendingLaunch = true;
+}
+
+void CGEMU342_OnCoolGirlWrite(unsigned int address, unsigned char value)
+{
+    if (!g_menuActive) return;
+
+    // Legacy launcher protocol: writes to $5FF0-$5FF2.
+    if (address == 0x5FF0) { g_legacyLo = value; return; }
+    if (address == 0x5FF1) { g_legacyHi = value; return; }
+    if (address == 0x5FF2 && value == 0xA5)
+    {
+        queueLaunch((unsigned)g_legacyLo | ((unsigned)g_legacyHi << 8));
+        return;
+    }
+
+    // Stock CoolGirl loader fallback. The actual game hand-off writes the
+    // complete register sequence $5001,$5000,$5002...$5007. Normal menu
+    // bank switching only writes a subset, so this sequence identifies a
+    // launch even when the menu ROM has no explicit mailbox patch.
+    static const unsigned int seq[8] =
+        {0x5001,0x5000,0x5002,0x5003,0x5004,0x5005,0x5006,0x5007};
+
+    if (address == seq[g_loaderSeq])
+    {
+        ++g_loaderSeq;
+        if (g_loaderSeq == 8)
+        {
+            g_loaderSeq = 0;
+            const unsigned id = (unsigned)GetMem(0x0006) | ((unsigned)GetMem(0x0007) << 8);
+            queueLaunch(id);
+        }
+    }
+    else
+    {
+        g_loaderSeq = (address == 0x5001) ? 1 : 0;
     }
 }
 
@@ -200,21 +256,31 @@ void CGEMU342_FrameBoundary()
 
     if (!g_menuActive) return;
 
+    // RAM-mailbox protocol used by cgemu342-embedded.lua.
     const uint8 magic = GetMem(0x07F2);
     if (magic == 0xA5 && !g_launchGuard)
     {
         g_launchGuard = true;
         const unsigned id = (unsigned)GetMem(0x07F0) | ((unsigned)GetMem(0x07F1) << 8);
         BWrite[0x07F2](0x07F2, 0);
+        queueLaunch(id);
+    }
+    else if (magic != 0xA5)
+    {
+        g_launchGuard = false;
+    }
+
+    // Mapper-write callbacks can queue a launch during the previous emulated
+    // frame. Load here, at the same boundary where Lua's emu.loadrom() runs.
+    if (g_pendingLaunch)
+    {
+        const unsigned id = g_pendingId;
+        g_pendingLaunch = false;
 
         std::string romfile;
         if (extractGame(id, romfile))
             loadRomExactlyLikeLua(romfile);
 
-        g_launchGuard = false;
-    }
-    else if (magic != 0xA5)
-    {
         g_launchGuard = false;
     }
 }
