@@ -51,17 +51,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path 'dist' -Force | Out-Null
 
-          $exe = Get-ChildItem $env:FCEUX_SRC -Recurse -File -Filter 'fceux.exe' |
-            Where-Object { $_.FullName -match '[\\/]x64[\\/]Release[\\/]' } |
-            Select-Object -First 1
-          if (-not $exe) {
-            $exe = Get-ChildItem $env:FCEUX_SRC -Recurse -File -Filter 'fceux.exe' | Select-Object -First 1
-          }
-          if (-not $exe) { throw 'Built FCEUX executable not found' }
-          Copy-Item $exe.FullName 'dist\fceux.exe' -Force
+          $exe = Join-Path $env:FCEUX_SRC 'vc\x64\Release\fceux64.exe'
+          if (-not (Test-Path $exe)) { throw 'Built fceux64.exe not found' }
+          Copy-Item $exe 'dist\fceux.exe' -Force
 
           $win = Join-Path $env:FCEUX_SRC 'src\drivers\win'
           foreach ($dll in @(
+            (Join-Path $win '7z.dll'),
             (Join-Path $win '7z_64.dll'),
             (Join-Path $win 'lua\x64\lua51.dll'),
             (Join-Path $win 'lua\x64\lua5.1.dll')
