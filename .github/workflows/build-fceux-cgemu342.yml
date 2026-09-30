@@ -5,7 +5,6 @@ on:
     branches: [cgemu342-native-build]
     paths:
       - '.github/workflows/build-fceux-cgemu342.yml'
-      - 'tools/fceux-cgemu342/**'
   workflow_dispatch:
 
 jobs:
@@ -17,24 +16,8 @@ jobs:
       - name: Checkout build files
         uses: actions/checkout@v4
 
-      - name: Setup MSYS2 MinGW64
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: true
-          install: >-
-            base-devel
-            mingw-w64-x86_64-toolchain
-            mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-SDL2
-            mingw-w64-x86_64-qt5-base
-            mingw-w64-x86_64-qt5-tools
-            mingw-w64-x86_64-qt5-declarative
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-minizip
-            mingw-w64-x86_64-libarchive
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
 
       - name: Download exact FCEUX source a62b868
         shell: pwsh
@@ -48,98 +31,52 @@ jobs:
           "FCEUX_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Source: $src"
 
-      - name: Patch FCEUX for native CGEMU342 + MinGW
+      - name: Patch classic Windows FCEUX with native CGEMU342 launcher
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           python tools/fceux-cgemu342/patch_fceux.py "$env:FCEUX_SRC"
 
-      - name: Qt5 tool compatibility
+      - name: Build classic Windows x64 FCEUX
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $compat = 'C:\msys64\mingw64\lib\qt5\bin'
-          New-Item -ItemType Directory -Path $compat -Force | Out-Null
-          foreach ($tool in @('qcollectiongenerator.exe','qhelpgenerator.exe')) {
-            $src = Join-Path 'C:\msys64\mingw64\bin' $tool
-            if (Test-Path $src) { Copy-Item $src (Join-Path $compat $tool) -Force }
-          }
-
-      - name: Configure
-        shell: msys2 {0}
-        run: |
-          set -euxo pipefail
-          SRC="$(cygpath -u "$FCEUX_SRC")"
-          cmake -S "$SRC" -B fceux-build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=/mingw64 \
-            -DQT6=0 \
-            -DUSE_LIBAV=0 \
-            -DGPROF_ENABLE=0 \
-            -DASAN_ENABLE=0
-
-      - name: Build
-        shell: msys2 {0}
-        run: |
-          set -euxo pipefail
-          cmake --build fceux-build --parallel 2
+          $sln = Join-Path $env:FCEUX_SRC 'vc\vc14_fceux.sln'
+          msbuild $sln /m /t:Build /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
+          if ($LASTEXITCODE -ne 0) { throw "MSBuild failed: $LASTEXITCODE" }
 
       - name: Create portable package
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $exe = Get-ChildItem 'fceux-build' -Recurse -File | Where-Object { $_.Name -in @('fceux.exe','qfceux.exe') } | Select-Object -First 1
-          if (-not $exe) { throw 'Built FCEUX executable not found' }
-
           New-Item -ItemType Directory -Path 'dist' -Force | Out-Null
-          $target = (Resolve-Path 'dist').Path + '\fceux-cgemu342.exe'
-          Copy-Item $exe.FullName $target -Force
 
-          $windeployqt = 'C:\msys64\mingw64\bin\windeployqt.exe'
-          if (Test-Path $windeployqt) {
-            & $windeployqt --release --no-translations $target
-            if ($LASTEXITCODE -ne 0) { throw 'windeployqt failed' }
+          $exe = Get-ChildItem $env:FCEUX_SRC -Recurse -File -Filter 'fceux.exe' |
+            Where-Object { $_.FullName -match '[\\/]x64[\\/]Release[\\/]' } |
+            Select-Object -First 1
+          if (-not $exe) {
+            $exe = Get-ChildItem $env:FCEUX_SRC -Recurse -File -Filter 'fceux.exe' | Select-Object -First 1
           }
+          if (-not $exe) { throw 'Built FCEUX executable not found' }
+          Copy-Item $exe.FullName 'dist\fceux.exe' -Force
 
-          $objdump = 'C:\msys64\mingw64\bin\objdump.exe'
-          $mingwBin = 'C:\msys64\mingw64\bin'
-          $queue = [System.Collections.Queue]::new()
-          $seen = @{}
-          $queue.Enqueue($target)
-          while ($queue.Count -gt 0) {
-            $bin = $queue.Dequeue()
-            $deps = & $objdump -p $bin 2>$null | Select-String 'DLL Name:' | ForEach-Object { ($_ -split 'DLL Name:\s*')[1].Trim() }
-            foreach ($dll in $deps) {
-              $key = $dll.ToLowerInvariant()
-              if ($seen.ContainsKey($key)) { continue }
-              $seen[$key] = $true
-              $srcDll = Join-Path $mingwBin $dll
-              if (Test-Path $srcDll) {
-                $dstDll = Join-Path (Resolve-Path 'dist').Path $dll
-                if (-not (Test-Path $dstDll)) {
-                  Copy-Item $srcDll $dstDll -Force
-                  $queue.Enqueue($dstDll)
-                }
-              }
-            }
+          $win = Join-Path $env:FCEUX_SRC 'src\drivers\win'
+          foreach ($dll in @(
+            (Join-Path $win '7z_64.dll'),
+            (Join-Path $win 'lua\x64\lua51.dll'),
+            (Join-Path $win 'lua\x64\lua5.1.dll')
+          )) {
+            if (Test-Path $dll) { Copy-Item $dll 'dist' -Force }
           }
 
           @'
-          @echo off
-          cd /d "%~dp0"
-          if not exist "multirom.nes" (
-            echo multirom.nes not found.
-            pause
-            exit /b 1
-          )
-          "fceux-cgemu342.exe" -rom "multirom.nes" -fullscreen 1
-          '@ | Set-Content 'dist\START_MULTIROM.bat' -Encoding ASCII
+          CGEMU342 native FCEUX build.
+          Put multirom.nes next to fceux.exe and start fceux.exe.
+          The launcher is compiled into FCEUX; no Lua script is used.
+          Press R to return to the multirom menu.
+          '@ | Set-Content 'dist\README.txt' -Encoding ASCII
 
-          @'
-          Native FCEUX CGEMU342 build.
-          Copy multirom.nes into this folder and run START_MULTIROM.bat.
-          No cgemu342-embedded.lua is required.
-          '@ | Set-Content 'dist\README.txt' -Encoding UTF8
+          if (Get-ChildItem 'dist' -Recurse -Filter '*.lua') { throw 'Lua script unexpectedly present in package' }
 
       - name: Upload ready Windows build
         uses: actions/upload-artifact@v4
