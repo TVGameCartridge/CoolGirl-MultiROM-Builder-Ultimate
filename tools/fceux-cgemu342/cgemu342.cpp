@@ -1,6 +1,7 @@
 #include "cgemu342.h"
 #include "types.h"
-#include "x6502.h"
+#include "debug.h"
+#include "fceu.h"
 
 #include <windows.h>
 #include <stdio.h>
@@ -194,12 +195,15 @@ void CGEMU342_Poll()
 
     if (!g_menuActive || !g_pendingPath.empty()) return;
 
-    const uint8 magic = X6502_DMR(0x07F2);
+    // Match the original Lua launcher exactly: memory.readbyte() uses GetMem(),
+    // which peeks without advancing the emulated CPU clock.
+    const uint8 magic = GetMem(0x07F2);
     if (magic == 0xA5 && !g_launchGuard)
     {
         g_launchGuard = true;
-        const unsigned id = (unsigned)X6502_DMR(0x07F0) | ((unsigned)X6502_DMR(0x07F1) << 8);
-        X6502_DMW(0x07F2, 0);
+        const unsigned id = (unsigned)GetMem(0x07F0) | ((unsigned)GetMem(0x07F1) << 8);
+        // Match memory.writebyte(): call the active write handler directly, with no extra CPU cycle.
+        BWrite[0x07F2](0x07F2, 0);
 
         std::string extracted;
         if (extractGame(id, extracted))
