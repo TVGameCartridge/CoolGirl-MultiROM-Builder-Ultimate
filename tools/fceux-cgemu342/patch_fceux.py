@@ -42,6 +42,8 @@ if 'CGEMU342_OnRomLoaded(t);' not in text:
 main.write_text(text, encoding="utf-8", newline="\n")
 print("patched: src/drivers/win/main.cpp")
 
+# This is the critical timing match. Lua resumes inside FCEUI_Emulate(),
+# immediately after FCEU_StateRecorderUpdate() and before input/PPU emulation.
 fceu = root / "src" / "fceu.cpp"
 text = fceu.read_text(encoding="utf-8-sig")
 if '#include "cgemu342.h"' not in text:
@@ -49,7 +51,6 @@ if '#include "cgemu342.h"' not in text:
     if needle not in text:
         raise SystemExit("fceu include insertion point not found")
     text = text.replace(needle, needle + '#include "cgemu342.h"\n', 1)
-
 needle = '\tFCEU_StateRecorderUpdate();\n'
 replacement = '\tFCEU_StateRecorderUpdate();\n\tCGEMU342_FrameBoundary();\n'
 if 'CGEMU342_FrameBoundary();' not in text:
@@ -58,4 +59,23 @@ if 'CGEMU342_FrameBoundary();' not in text:
     text = text.replace(needle, replacement, 1)
 fceu.write_text(text, encoding="utf-8", newline="\n")
 print("patched: src/fceu.cpp")
+
+# Hook mapper 342 writes so native launcher supports both the old $5FF0
+# protocol and unmodified CoolGirl menu hand-off sequences.
+coolgirl = root / "src" / "boards" / "coolgirl.cpp"
+text = coolgirl.read_text(encoding="utf-8-sig")
+if '#include "../cgemu342.h"' not in text:
+    needle = '#include "mapinc.h"\n'
+    if needle not in text:
+        raise SystemExit("coolgirl include insertion point not found")
+    text = text.replace(needle, needle + '#include "../cgemu342.h"\n', 1)
+needle = 'static DECLFW(COOLGIRL_WRITE) {\n'
+replacement = 'static DECLFW(COOLGIRL_WRITE) {\n\tCGEMU342_OnCoolGirlWrite(A, V);\n'
+if 'CGEMU342_OnCoolGirlWrite(A, V);' not in text:
+    if needle not in text:
+        raise SystemExit("coolgirl write insertion point not found")
+    text = text.replace(needle, replacement, 1)
+coolgirl.write_text(text, encoding="utf-8", newline="\n")
+print("patched: src/boards/coolgirl.cpp")
+
 print("PATCH COMPLETE")
