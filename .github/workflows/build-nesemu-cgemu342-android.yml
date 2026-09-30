@@ -63,6 +63,7 @@ jobs:
         run: ./makeAll-android.sh install
 
       - name: Build Imagine and EmuFramework environment
+        working-directory: emu-ex-plus-alpha
         run: |
           "$IMAGINE_PATH/android.sh" config
           "$IMAGINE_PATH/android.sh" installLinks --config Release
