@@ -1,0 +1,91 @@
+name: Build NES.emu CGEMU342 Android
+
+on:
+  push:
+    branches: [nesemu-cgemu342-android]
+    paths:
+      - '.github/workflows/build-nesemu-cgemu342-android.yml'
+      - 'tools/nesemu-cgemu342/**'
+  workflow_dispatch:
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CGEMU342 patch repo
+        uses: actions/checkout@v4
+        with:
+          path: patchrepo
+
+      - name: Checkout current NES.emu source
+        uses: actions/checkout@v4
+        with:
+          repository: Rakashazi/emu-ex-plus-alpha
+          ref: master
+          fetch-depth: 1
+          path: src
+
+      - name: Apply CGEMU342 patch
+        run: python3 patchrepo/tools/nesemu-cgemu342/patch_nesemu.py src
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake autopoint bash gcc-arm-linux-gnueabi file gawk gettext \
+            git libtool libtool-bin make nasm pkg-config unzip wget
+
+      - name: Install latest CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android NDK and build environment
+        working-directory: src
+        run: |
+          mkdir imagine-sdk
+          NDK_VERSION='r30-beta1'
+          wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
+          unzip -q "android-ndk-${NDK_VERSION}-linux.zip"
+          rm "android-ndk-${NDK_VERSION}-linux.zip"
+          mv "android-ndk-${NDK_VERSION}" android-ndk
+          {
+            echo "ANDROID_NDK_PATH=${{ github.workspace }}/src/android-ndk"
+            echo "EMUFRAMEWORK_PATH=${{ github.workspace }}/src/EmuFramework"
+            echo "IMAGINE_PATH=${{ github.workspace }}/src/imagine"
+            echo "IMAGINE_SDK_PATH=${{ github.workspace }}/src/imagine-sdk"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Imagine dependencies
+        working-directory: src/imagine/bundle/all
+        run: ./makeAll-android.sh install
+
+      - name: Configure base Android build
+        working-directory: src
+        run: |
+          "$IMAGINE_PATH/android.sh" config
+          "$IMAGINE_PATH/android.sh" installLinks --config Release
+          "$EMUFRAMEWORK_PATH/android.sh" config
+          "$EMUFRAMEWORK_PATH/android.sh" installLinks --config Release
+
+      - name: Build NES.emu CGEMU342 APK
+        working-directory: src/NES.emu
+        run: make -f android.mk android-apk CONFIG=Release V=1 -j$(nproc)
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          APK=$(find src/NES.emu/build/android/build/outputs/apk -type f -name '*.apk' | head -1)
+          test -n "$APK"
+          cp "$APK" out/NESemu-CGEMU342-Android.apk
+          ls -lh out/NESemu-CGEMU342-Android.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NESemu-CGEMU342-Android
+          path: out/NESemu-CGEMU342-Android.apk
