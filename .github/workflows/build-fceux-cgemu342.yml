@@ -5,6 +5,7 @@ on:
     branches: [cgemu342-native-build]
     paths:
       - '.github/workflows/build-fceux-cgemu342.yml'
+      - 'tools/fceux-cgemu342/**'
   workflow_dispatch:
 
 jobs:
@@ -68,7 +69,7 @@ jobs:
           @'
           CGEMU342 native FCEUX build.
           Put multirom.nes next to fceux.exe and start fceux.exe.
-          The launcher is compiled into FCEUX; no Lua script is used.
+          CGEMU342 selection/extraction is compiled into FCEUX; no Lua script is used.
           Press R to return to the multirom menu.
           '@ | Set-Content 'dist\README.txt' -Encoding ASCII
 
