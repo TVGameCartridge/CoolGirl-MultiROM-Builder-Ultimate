@@ -27,8 +27,14 @@ def fetch_board(name):
         return r.read().decode("utf-8")
 
 
-# FCEUmm is derived from the same FCEU codebase.  Pin the exact source
-# revision so these mapper implementations cannot silently change.
+def replace_once(text, old, new, label):
+    if old not in text:
+        raise SystemExit(f"mapper patch marker not found: {label}")
+    return text.replace(old, new, 1)
+
+
+# These small boards use the same FCEU/MMC3 board API as the pinned FCEUX.
+# Pin the exact FCEUmm source revision so their behaviour cannot drift.
 ports = {
     "830134C.c": "830134C.cpp",   # mapper 315
     "gn26.c": "gn26.cpp",         # mapper 344
@@ -36,15 +42,219 @@ ports = {
     "395.c": "395.cpp",           # mapper 395
     "359.c": "359.cpp",           # mapper 540 (shared source with 359)
 }
-
 for upstream, local in ports.items():
     write(boards / local, fetch_board(upstream))
 
-# Mapper 358 is a J.Y. ASIC variant.  The old pinned FCEUX 90.cpp only has
-# 90/209/211; current FCEUmm's jyasic implementation is the compatible
-# continuation and also retains those old mapper entry points.
-jy = fetch_board("jyasic.c")
-write(boards / "90.cpp", jy)
+# Mapper 358 is another J.Y. ASIC variant.  Do not replace FCEUX's complete
+# 90/209/211 implementation with a newer FCEUmm core: the newer core uses APIs
+# that are not present in this pinned FCEUX revision.  Instead add mapper 358's
+# banking rules to the native 90.cpp core.
+m90_path = boards / "90.cpp"
+m90 = read(m90_path)
+
+m90 = replace_once(
+    m90,
+    "static int is209;\nstatic int is211;",
+    "static int is209;\nstatic int is211;\nstatic int is358;",
+    "90.cpp mapper flags",
+)
+
+mapper358_helpers = r'''
+/* NES 2.0 mapper 358 (J.Y. YY860606C) banking.  The formulas are ported
+ * from FCEUmm jyasic.c, while keeping this FCEUX revision's native core. */
+static uint8 rev7_358(uint8 v)
+{
+  return ((v << 6) & 0x40) | ((v << 4) & 0x20) | ((v << 2) & 0x10) |
+         (v & 0x08) | ((v >> 2) & 0x04) | ((v >> 4) & 0x02) |
+         ((v >> 6) & 0x01);
+}
+
+static void tekprom358(void)
+{
+  uint32 mask = 0x1F;
+  uint32 bank = (tkcom[3] << 4) & ~0x1F;
+  uint8 last = (tkcom[0] & 0x04) ? prgb[3] : 0xFF;
+  uint8 p6000 = 0;
+
+  switch (tkcom[0] & 3)
+  {
+    case 0:
+      setprg32(0x8000, ((last & mask) | bank) >> 2);
+      p6000 = (prgb[3] << 2) | 3;
+      break;
+    case 1:
+      setprg16(0x8000, ((prgb[1] & mask) | bank) >> 1);
+      setprg16(0xC000, ((last & mask) | bank) >> 1);
+      p6000 = (prgb[3] << 1) | 1;
+      break;
+    case 2:
+      setprg8(0x8000, (prgb[0] & mask) | bank);
+      setprg8(0xA000, (prgb[1] & mask) | bank);
+      setprg8(0xC000, (prgb[2] & mask) | bank);
+      setprg8(0xE000, (last & mask) | bank);
+      p6000 = prgb[3];
+      break;
+    case 3:
+      setprg8(0x8000, (rev7_358(prgb[0]) & mask) | bank);
+      setprg8(0xA000, (rev7_358(prgb[1]) & mask) | bank);
+      setprg8(0xC000, (rev7_358(prgb[2]) & mask) | bank);
+      setprg8(0xE000, (rev7_358(last) & mask) | bank);
+      p6000 = rev7_358(prgb[3]);
+      break;
+  }
+
+  if (tkcom[0] & 0x80)
+    setprg8(0x6000, (p6000 & mask) | bank);
+}
+
+static void tekvrom358(void)
+{
+  int x;
+  uint32 mask, bank;
+  if (tkcom[3] & 0x20)
+  {
+    mask = 0x1FF;
+    bank = (tkcom[3] << 7) & 0x600;
+  }
+  else
+  {
+    mask = 0x0FF;
+    bank = ((tkcom[3] << 8) & 0x100) | ((tkcom[3] << 7) & 0x600);
+  }
+
+  switch (tkcom[0] & 0x18)
+  {
+    case 0x00:
+      setchr8((((chrlow[0] | (chrhigh[0] << 8)) & mask) | bank) >> 3);
+      break;
+    case 0x08:
+      if (tkcom[3] & 0x80)
+      {
+        setchr4(0x0000, (((chrlow[chr[0]] | (chrhigh[chr[0]] << 8)) & mask) | bank) >> 2);
+        setchr4(0x1000, (((chrlow[chr[1]] | (chrhigh[chr[1]] << 8)) & mask) | bank) >> 2);
+      }
+      else
+      {
+        setchr4(0x0000, (((chrlow[0] | (chrhigh[0] << 8)) & mask) | bank) >> 2);
+        setchr4(0x1000, (((chrlow[4] | (chrhigh[4] << 8)) & mask) | bank) >> 2);
+      }
+      break;
+    case 0x10:
+      for (x = 0; x < 8; x += 2)
+        setchr2(x << 10, (((chrlow[x] | (chrhigh[x] << 8)) & mask) | bank) >> 1);
+      break;
+    case 0x18:
+      for (x = 0; x < 8; x++)
+        setchr1(x << 10, ((chrlow[x] | (chrhigh[x] << 8)) & mask) | bank);
+      break;
+  }
+}
+
+static void mira358(void)
+{
+  int x;
+  if ((tkcom[0] & 0x20) || (tkcom[1] & 0x08))
+  {
+    setmirrorw(names[0] & 1, names[1] & 1, names[2] & 1, names[3] & 1);
+    if (tkcom[0] & 0x20)
+    {
+      uint32 mask, bank;
+      if (tkcom[3] & 0x20)
+      {
+        mask = 0x1FF;
+        bank = (tkcom[3] << 7) & 0x600;
+      }
+      else
+      {
+        mask = 0x0FF;
+        bank = ((tkcom[3] << 8) & 0x100) | ((tkcom[3] << 7) & 0x600);
+      }
+      for (x = 0; x < 4; x++)
+      {
+        int rom = ((names[x] & 0x80) ^ (tkcom[2] & 0x80)) | (tkcom[0] & 0x40);
+        if (rom)
+          setntamem(CHRptr[0] + 0x400 * (((names[x] & mask) | bank) & CHRmask1[0]), 0, x);
+      }
+    }
+  }
+  else
+  {
+    switch (tkcom[1] & 3)
+    {
+      case 0: setmirror(MI_V); break;
+      case 1: setmirror(MI_H); break;
+      case 2: setmirror(MI_0); break;
+      case 3: setmirror(MI_1); break;
+    }
+  }
+}
+
+'''
+
+m90 = replace_once(
+    m90,
+    "static void mira(void)\n{",
+    mapper358_helpers + "static void mira(void)\n{\n  if(is358)\n  {\n    mira358();\n    return;\n  }",
+    "90.cpp mira",
+)
+
+m90 = replace_once(
+    m90,
+    "static void tekprom(void)\n{",
+    "static void tekprom(void)\n{\n  if(is358)\n  {\n    tekprom358();\n    return;\n  }",
+    "90.cpp tekprom",
+)
+
+m90 = replace_once(
+    m90,
+    "static void tekvrom(void)\n{",
+    "static void tekvrom(void)\n{\n  if(is358)\n  {\n    tekvrom358();\n    return;\n  }",
+    "90.cpp tekvrom",
+)
+
+# Mapper 358 has MMC4-style latches only when D003.7 is enabled and CHR mode
+# is 4 KiB.  Existing mapper 209 behaviour remains untouched.
+ppu_marker = "static void M90PPU(uint32 A)\n{\n  if((IRQMode&3)==2)"
+ppu_repl = "static void M90PPU(uint32 A)\n{\n  if(is358 && (tkcom[3]&0x80) && ((tkcom[0]&0x18)==0x08) && (((A&0x2FF0)==0x0FD0) || ((A&0x2FF0)==0x0FE0) || ((A&0x2FF0)==0x1FD0) || ((A&0x2FF0)==0x1FE0)))\n  {\n    chr[(A>>12)&1]=((A>>10)&4)|((A>>4)&2);\n    tekvrom();\n  }\n\n  if((IRQMode&3)==2)"
+m90 = replace_once(m90, ppu_marker, ppu_repl, "90.cpp PPU hook")
+
+# Use the full D000-D7FF mode-register decode for mapper 358.
+m90 = replace_once(
+    m90,
+    "  SetWriteHandler(0xD000,0xD5ff,M90ModeWrite);",
+    "  if(is358) SetWriteHandler(0xD000,0xD7ff,M90ModeWrite);\n  else SetWriteHandler(0xD000,0xD5ff,M90ModeWrite);",
+    "90.cpp mode handler range",
+)
+
+# FCEUmm initializes mapper 358's registers to zero and latches to 0/4.
+power_marker = "  memset(tkcom,0x00,sizeof(tkcom));\n  memset(prgb,0xff,sizeof(prgb));\n  memset(chrlow,0xff,sizeof(chrlow));\n  memset(chrhigh,0xff,sizeof(chrhigh));\n  memset(names,0x00,sizeof(names));"
+power_repl = "  memset(tkcom,0x00,sizeof(tkcom));\n  if(is358)\n  {\n    memset(prgb,0x00,sizeof(prgb));\n    memset(chrlow,0x00,sizeof(chrlow));\n    memset(chrhigh,0x00,sizeof(chrhigh));\n    chr[0]=0; chr[1]=4;\n  }\n  else\n  {\n    memset(prgb,0xff,sizeof(prgb));\n    memset(chrlow,0xff,sizeof(chrlow));\n    memset(chrhigh,0xff,sizeof(chrhigh));\n  }\n  memset(names,0x00,sizeof(names));"
+m90 = replace_once(m90, power_marker, power_repl, "90.cpp power init")
+
+# Make every mapper init set all variant flags deterministically, then add 358.
+m90 = replace_once(m90, "  is211=0;\n  is209=0;\n  info->Reset=togglie;", "  is211=0;\n  is209=0;\n  is358=0;\n  info->Reset=togglie;", "Mapper90 flags")
+m90 = replace_once(m90, "  is211=0;\n  is209=1;\n  info->Reset=togglie;", "  is211=0;\n  is209=1;\n  is358=0;\n  info->Reset=togglie;", "Mapper209 flags")
+m90 = replace_once(m90, "void Mapper211_Init(CartInfo *info)\n{\n  is211=1;", "void Mapper211_Init(CartInfo *info)\n{\n  is211=1;\n  is209=0;\n  is358=0;", "Mapper211 flags")
+
+mapper358_init = r'''
+
+void Mapper358_Init(CartInfo *info)
+{
+  is211=0;
+  is209=0;
+  is358=1;
+  info->Reset=togglie;
+  info->Power=M90Power;
+  PPU_hook=M90PPU;
+  MapIRQHook=CPUWrap;
+  GameHBIRQHook2=SLWrap;
+  GameStateRestore=M90Restore;
+  AddExState(Tek_StateRegs, ~0, 0, 0);
+}
+'''
+if "void Mapper358_Init(CartInfo *info)" not in m90:
+    m90 += mapper358_init
+write(m90_path, m90)
 
 # Compile the additional board sources.  90.cpp is already in the list.
 cmake = read(src / "CMakeLists.txt")
@@ -102,7 +312,6 @@ entries = [
 ]
 missing_entries = []
 for name, number, init in entries:
-    # Match the numeric mapper field, not incidental text elsewhere.
     if not re.search(r"\{[^\n]*,\s*" + str(number) + r"\s*,", ines_cpp):
         missing_entries.append(f"\t{{{name},\t{number}, {init}}},")
 
