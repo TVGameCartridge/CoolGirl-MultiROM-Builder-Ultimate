@@ -54,6 +54,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python tools/fceux-cgemu342/patch_fceux.py "$env:FCEUX_SRC"
           python tools/fceux-mappers-test/patch_fceux.py "$env:FCEUX_SRC"
+          python tools/fceux-mappers-test/fix_jyasic_api.py "$env:FCEUX_SRC"
 
       - name: Qt5 tool compatibility
         shell: pwsh
