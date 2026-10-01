@@ -52,6 +52,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python tools/fceux-cgemu342/patch_fceux.py "$env:FCEUX_SRC"
+          python tools/fceux-cgemu342/patch_mingw_compat.py "$env:FCEUX_SRC"
 
       - name: Add required NES 2.0 mappers
         shell: pwsh
