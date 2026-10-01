@@ -59,6 +59,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           python tools/fceux-cgemu342/patch_mappers.py "$env:FCEUX_SRC"
+          python tools/fceux-cgemu342/patch_mapper_compat.py "$env:FCEUX_SRC"
 
       - name: Qt5 tool compatibility
         shell: pwsh
