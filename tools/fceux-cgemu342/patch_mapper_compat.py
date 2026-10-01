@@ -17,7 +17,7 @@ def patch(path, old, new, label):
 
 
 # In the pinned FCEUX, GenMMC3Close() is intentionally static inside mmc3.cpp,
-# while newer FCEUmm exports it.  Preserve the close callback installed by
+# while newer FCEUmm exports it. Preserve the close callback installed by
 # GenMMC3_Init(), then chain to it from mapper 393's custom CHR-RAM cleanup.
 p = root / "src/boards/393.cpp"
 s = p.read_text(encoding="utf-8", errors="ignore").replace("\r\n", "\n")
@@ -44,5 +44,21 @@ if "M393BaseClose = info->Close;" not in s:
     raise SystemExit("mapper 393 base close hook patch failed")
 p.write_text(s, encoding="utf-8", newline="\n")
 print("patched: mapper 393 close chaining")
+
+
+# FCEUmm split the FDS APU into fds_apu.{c,h} and introduced FDSSoundPower().
+# The pinned FCEUX keeps the same sound core in fds.cpp; its public Reset and
+# StateAdd functions provide the exact two operations performed by the newer
+# FDSSoundPower wrapper.
+p = root / "src/boards/359.cpp"
+s = p.read_text(encoding="utf-8", errors="ignore").replace("\r\n", "\n")
+s = s.replace('#include "../fds_apu.h"', '#include "../fds.h"\nvoid FDSSoundStateAdd(void);', 1)
+s = s.replace("\tFDSSoundPower();", "\tFDSSoundReset();\n\tFDSSoundStateAdd();", 1)
+if "fds_apu.h" in s or "FDSSoundPower();" in s:
+    raise SystemExit("mapper 540 FDS API adaptation failed")
+if "FDSSoundStateAdd();" not in s:
+    raise SystemExit("mapper 540 FDS state registration missing")
+p.write_text(s, encoding="utf-8", newline="\n")
+print("patched: mapper 540 FDS sound API")
 
 print("MAPPER COMPAT PATCH COMPLETE")
