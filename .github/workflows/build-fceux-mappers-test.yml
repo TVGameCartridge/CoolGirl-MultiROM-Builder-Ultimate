@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/build-fceux-mappers-test.yml'
       - 'tools/fceux-mappers-test/**'
+      - 'tools/fceux-cgemu342/**'
   workflow_dispatch:
 
 jobs:
@@ -47,10 +48,11 @@ jobs:
           if (-not $src) { throw 'FCEUX source directory not found' }
           "FCEUX_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Patch requested mappers
+      - name: Apply MinGW portability and requested mapper patches
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          python tools/fceux-cgemu342/patch_fceux.py "$env:FCEUX_SRC"
           python tools/fceux-mappers-test/patch_fceux.py "$env:FCEUX_SRC"
 
       - name: Qt5 tool compatibility
