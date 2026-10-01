@@ -1,0 +1,246 @@
+name: Build FCEUX 2.7.0 Mapper Test
+
+on:
+  push:
+    branches: [fceux-mappers-test]
+    paths:
+      - '.github/workflows/build-fceux-mappers-test.yml'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout helper repo
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2 MinGW64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-qt5-base
+            mingw-w64-x86_64-qt5-tools
+            mingw-w64-x86_64-qt5-declarative
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-minizip
+            mingw-w64-x86_64-libarchive
+
+      - name: Download exact FCEUX 2.7.0 source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest 'https://github.com/TASEmulators/fceux/archive/a62b868e9247c4aafd66f597cdfa8d2609704087.zip' -OutFile 'fceux.zip'
+          New-Item -ItemType Directory -Path 'fceux-src' | Out-Null
+          Expand-Archive 'fceux.zip' -DestinationPath 'fceux-src' -Force
+          $src = (Get-ChildItem 'fceux-src' -Directory | Select-Object -First 1).FullName
+          if (-not $src) { throw 'FCEUX source directory not found' }
+          "FCEUX_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Add mapper 45 264 287 315 344 358 393 395 540 support
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = $env:FCEUX_SRC
+          $boards = Join-Path $src 'src\boards'
+
+          # Mapper sources backported from FCEUX-compatible Yhc/FCEUmm implementations.
+          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/gn26.cpp' -OutFile (Join-Path $boards 'gn26.cpp')
+          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/393.cpp' -OutFile (Join-Path $boards '393.cpp')
+          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/395.cpp' -OutFile (Join-Path $boards '395.cpp')
+          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/359.cpp' -OutFile (Join-Path $boards '359.cpp')
+          # Newer JYASIC core includes mapper 358.
+          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/90.cpp' -OutFile (Join-Path $boards '90.cpp')
+
+          # Add mapper 315 to MMC3 core.
+          $mmc3Path = Join-Path $boards 'mmc3.cpp'
+          $mmc3 = Get-Content $mmc3Path -Raw
+          if ($mmc3 -notmatch 'void Mapper315_Init\(CartInfo \*info\)') {
+            $m315 = @'
+
+// NES 2.0 Mapper 315 - 830134C / 820733C family
+static void M315PW(uint32 A, uint8 V) {
+    int outerBank = (EXPREGS[0] >> 1) & 3;
+    if (outerBank == 3)
+        syncPRG_GNROM_67(0x02, 0x0F, outerBank << 4);
+    else
+        syncPRG(0x0F, outerBank << 4);
+}
+
+static void M315CW(uint32 A, uint8 V) {
+    syncCHR_ROM(0xFF, ((EXPREGS[0] & 0x08) ? 0x040 : 0x000) |
+                      ((EXPREGS[0] & 0x02) ? 0x080 : 0x000) |
+                      ((EXPREGS[0] & 0x01) ? 0x100 : 0x000));
+}
+
+static DECLFW(M315Write) {
+    EXPREGS[0] = V;
+    FixMMC3PRG(MMC3_cmd);
+    FixMMC3CHR(MMC3_cmd);
+}
+
+static void M315_Reset(void) {
+    EXPREGS[0] = 0;
+    MMC3RegReset();
+}
+
+static void M315_Power(void) {
+    M315_Reset();
+    GenMMC3Power();
+    SetWriteHandler(0x6000, 0x7FFF, M315Write);
+}
+
+void Mapper315_Init(CartInfo *info) {
+    GenMMC3_Init(info, 128, 128, 8, info->battery);
+    pwrap = M315PW;
+    cwrap = M315CW;
+    info->Power = M315_Power;
+    info->Reset = M315_Reset;
+    AddExState(EXPREGS, 1, 0, "EXPR");
+}
+'@
+            Add-Content -Path $mmc3Path -Value $m315
+          }
+
+          # Declarations.
+          $inesHPath = Join-Path $src 'src\ines.h'
+          $inesH = Get-Content $inesHPath -Raw
+          $decl = @'
+void Mapper315_Init(CartInfo *);
+void BMCGN26_Init(CartInfo *);
+void Mapper358_Init(CartInfo *);
+void Mapper393_Init(CartInfo *);
+void Mapper395_Init(CartInfo *);
+void Mapper359_Init(CartInfo *);
+void Mapper540_Init(CartInfo *);
+'@
+          if ($inesH -notmatch 'Mapper315_Init') {
+            $anchor = 'void Mapper255_Init(CartInfo *);'
+            if (-not $inesH.Contains($anchor)) { throw 'ines.h anchor not found' }
+            $inesH = $inesH.Replace($anchor, $anchor + "`r`n" + $decl)
+            Set-Content $inesHPath $inesH -NoNewline
+          }
+
+          # Mapper registrations. Mapper 45 already exists.
+          $inesCppPath = Join-Path $src 'src\ines.cpp'
+          $inesCpp = Get-Content $inesCppPath -Raw
+          if ($inesCpp -notmatch 'YOKO / Master Fighter VI') {
+            $anchor = '//-------- Mappers 256-511 is the Supplementary Multilingual Plane ----------'
+            if (-not $inesCpp.Contains($anchor)) { throw 'ines.cpp mapper table anchor not found' }
+            $entries = @'
+    {"YOKO / Master Fighter VI", 264, UNLYOKO_Init},
+    {"411120-C / 811120-C", 287, BMC411120C_Init},
+    {"830134C / 820733C", 315, Mapper315_Init},
+    {"BMC-GN-26", 344, BMCGN26_Init},
+    {"JYASIC multicart", 358, Mapper358_Init},
+    {"BMC 8-in-1 G002", 393, Mapper393_Init},
+    {"Realtec 8210 / SPC003", 395, Mapper395_Init},
+    {"UNL-82112C / EJ4003", 540, Mapper540_Init},
+
+'@
+            $inesCpp = $inesCpp.Replace($anchor, $entries + $anchor)
+            Set-Content $inesCppPath $inesCpp -NoNewline
+          }
+
+          # CMake source list.
+          $cmakePath = Join-Path $src 'src\CMakeLists.txt'
+          $cmake = Get-Content $cmakePath -Raw
+          $anchor = "`t`${CMAKE_CURRENT_SOURCE_DIR}/boards/354.cpp"
+          foreach ($name in @('359.cpp','393.cpp','395.cpp','gn26.cpp')) {
+            $line = "`t`${CMAKE_CURRENT_SOURCE_DIR}/boards/$name"
+            if (-not $cmake.Contains($line)) {
+              if (-not $cmake.Contains($anchor)) { throw 'CMake board list anchor not found' }
+              $cmake = $cmake.Replace($anchor, $anchor + "`r`n" + $line)
+            }
+          }
+          Set-Content $cmakePath $cmake -NoNewline
+
+      - name: Qt5 tool compatibility
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $compat = 'C:\msys64\mingw64\lib\qt5\bin'
+          New-Item -ItemType Directory -Path $compat -Force | Out-Null
+          foreach ($tool in @('qcollectiongenerator.exe','qhelpgenerator.exe')) {
+            $srcTool = Join-Path 'C:\msys64\mingw64\bin' $tool
+            if (Test-Path $srcTool) { Copy-Item $srcTool (Join-Path $compat $tool) -Force }
+          }
+
+      - name: Configure
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          SRC="$(cygpath -u "$FCEUX_SRC")"
+          cmake -S "$SRC" -B fceux-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=/mingw64 \
+            -DQT6=0 \
+            -DUSE_LIBAV=0 \
+            -DGPROF_ENABLE=0 \
+            -DASAN_ENABLE=0
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          set -euxo pipefail
+          cmake --build fceux-build --parallel 2
+
+      - name: Create portable Windows package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem 'fceux-build' -Recurse -File | Where-Object { $_.Name -in @('fceux.exe','qfceux.exe') } | Select-Object -First 1
+          if (-not $exe) { throw 'Built FCEUX executable not found' }
+
+          New-Item -ItemType Directory -Path 'dist' -Force | Out-Null
+          $target = (Resolve-Path 'dist').Path + '\fceux-2.7.0-mappers-test.exe'
+          Copy-Item $exe.FullName $target -Force
+
+          $windeployqt = 'C:\msys64\mingw64\bin\windeployqt.exe'
+          if (Test-Path $windeployqt) { & $windeployqt --release --no-translations $target }
+
+          $objdump = 'C:\msys64\mingw64\bin\objdump.exe'
+          $mingwBin = 'C:\msys64\mingw64\bin'
+          $queue = [System.Collections.Queue]::new()
+          $seen = @{}
+          $queue.Enqueue($target)
+          while ($queue.Count -gt 0) {
+            $bin = $queue.Dequeue()
+            $deps = & $objdump -p $bin 2>$null | Select-String 'DLL Name:' | ForEach-Object { ($_ -split 'DLL Name:\s*')[1].Trim() }
+            foreach ($dll in $deps) {
+              $key = $dll.ToLowerInvariant()
+              if ($seen.ContainsKey($key)) { continue }
+              $seen[$key] = $true
+              $srcDll = Join-Path $mingwBin $dll
+              if (Test-Path $srcDll) {
+                $dstDll = Join-Path (Resolve-Path 'dist').Path $dll
+                if (-not (Test-Path $dstDll)) {
+                  Copy-Item $srcDll $dstDll -Force
+                  $queue.Enqueue($dstDll)
+                }
+              }
+            }
+          }
+
+          @'
+          FCEUX 2.7.0 mapper test build
+          Requested mappers: 45, 264, 287, 315, 344, 358, 393, 395, 540
+          Test build generated for Veix.
+          '@ | Set-Content 'dist\README.txt' -Encoding UTF8
+
+      - name: Upload Windows test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: FCEUX-2.7.0-Mappers-Test-Windows
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 14
