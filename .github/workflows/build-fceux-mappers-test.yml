@@ -5,6 +5,7 @@ on:
     branches: [fceux-mappers-test]
     paths:
       - '.github/workflows/build-fceux-mappers-test.yml'
+      - 'tools/fceux-mappers-test/**'
   workflow_dispatch:
 
 jobs:
@@ -46,123 +47,11 @@ jobs:
           if (-not $src) { throw 'FCEUX source directory not found' }
           "FCEUX_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Add mapper 45 264 287 315 344 358 393 395 540 support
+      - name: Patch requested mappers
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $src = $env:FCEUX_SRC
-          $boards = Join-Path $src 'src\boards'
-
-          # Mapper sources backported from FCEUX-compatible Yhc/FCEUmm implementations.
-          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/gn26.cpp' -OutFile (Join-Path $boards 'gn26.cpp')
-          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/393.cpp' -OutFile (Join-Path $boards '393.cpp')
-          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/395.cpp' -OutFile (Join-Path $boards '395.cpp')
-          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/359.cpp' -OutFile (Join-Path $boards '359.cpp')
-          # Newer JYASIC core includes mapper 358.
-          Invoke-WebRequest 'https://raw.githubusercontent.com/Yhc-Studio/FCEUX-2.6.6-Yhc/main/src/boards/90.cpp' -OutFile (Join-Path $boards '90.cpp')
-
-          # Add mapper 315 to MMC3 core.
-          $mmc3Path = Join-Path $boards 'mmc3.cpp'
-          $mmc3 = Get-Content $mmc3Path -Raw
-          if ($mmc3 -notmatch 'void Mapper315_Init\(CartInfo \*info\)') {
-            $m315 = @'
-
-// NES 2.0 Mapper 315 - 830134C / 820733C family
-static void M315PW(uint32 A, uint8 V) {
-    int outerBank = (EXPREGS[0] >> 1) & 3;
-    if (outerBank == 3)
-        syncPRG_GNROM_67(0x02, 0x0F, outerBank << 4);
-    else
-        syncPRG(0x0F, outerBank << 4);
-}
-
-static void M315CW(uint32 A, uint8 V) {
-    syncCHR_ROM(0xFF, ((EXPREGS[0] & 0x08) ? 0x040 : 0x000) |
-                      ((EXPREGS[0] & 0x02) ? 0x080 : 0x000) |
-                      ((EXPREGS[0] & 0x01) ? 0x100 : 0x000));
-}
-
-static DECLFW(M315Write) {
-    EXPREGS[0] = V;
-    FixMMC3PRG(MMC3_cmd);
-    FixMMC3CHR(MMC3_cmd);
-}
-
-static void M315_Reset(void) {
-    EXPREGS[0] = 0;
-    MMC3RegReset();
-}
-
-static void M315_Power(void) {
-    M315_Reset();
-    GenMMC3Power();
-    SetWriteHandler(0x6000, 0x7FFF, M315Write);
-}
-
-void Mapper315_Init(CartInfo *info) {
-    GenMMC3_Init(info, 128, 128, 8, info->battery);
-    pwrap = M315PW;
-    cwrap = M315CW;
-    info->Power = M315_Power;
-    info->Reset = M315_Reset;
-    AddExState(EXPREGS, 1, 0, "EXPR");
-}
-'@
-            Add-Content -Path $mmc3Path -Value $m315
-          }
-
-          # Declarations.
-          $inesHPath = Join-Path $src 'src\ines.h'
-          $inesH = Get-Content $inesHPath -Raw
-          $decl = @'
-void Mapper315_Init(CartInfo *);
-void BMCGN26_Init(CartInfo *);
-void Mapper358_Init(CartInfo *);
-void Mapper393_Init(CartInfo *);
-void Mapper395_Init(CartInfo *);
-void Mapper359_Init(CartInfo *);
-void Mapper540_Init(CartInfo *);
-'@
-          if ($inesH -notmatch 'Mapper315_Init') {
-            $anchor = 'void Mapper255_Init(CartInfo *);'
-            if (-not $inesH.Contains($anchor)) { throw 'ines.h anchor not found' }
-            $inesH = $inesH.Replace($anchor, $anchor + "`r`n" + $decl)
-            Set-Content $inesHPath $inesH -NoNewline
-          }
-
-          # Mapper registrations. Mapper 45 already exists.
-          $inesCppPath = Join-Path $src 'src\ines.cpp'
-          $inesCpp = Get-Content $inesCppPath -Raw
-          if ($inesCpp -notmatch 'YOKO / Master Fighter VI') {
-            $anchor = '//-------- Mappers 256-511 is the Supplementary Multilingual Plane ----------'
-            if (-not $inesCpp.Contains($anchor)) { throw 'ines.cpp mapper table anchor not found' }
-            $entries = @'
-    {"YOKO / Master Fighter VI", 264, UNLYOKO_Init},
-    {"411120-C / 811120-C", 287, BMC411120C_Init},
-    {"830134C / 820733C", 315, Mapper315_Init},
-    {"BMC-GN-26", 344, BMCGN26_Init},
-    {"JYASIC multicart", 358, Mapper358_Init},
-    {"BMC 8-in-1 G002", 393, Mapper393_Init},
-    {"Realtec 8210 / SPC003", 395, Mapper395_Init},
-    {"UNL-82112C / EJ4003", 540, Mapper540_Init},
-
-'@
-            $inesCpp = $inesCpp.Replace($anchor, $entries + $anchor)
-            Set-Content $inesCppPath $inesCpp -NoNewline
-          }
-
-          # CMake source list.
-          $cmakePath = Join-Path $src 'src\CMakeLists.txt'
-          $cmake = Get-Content $cmakePath -Raw
-          $anchor = "`t`${CMAKE_CURRENT_SOURCE_DIR}/boards/354.cpp"
-          foreach ($name in @('359.cpp','393.cpp','395.cpp','gn26.cpp')) {
-            $line = "`t`${CMAKE_CURRENT_SOURCE_DIR}/boards/$name"
-            if (-not $cmake.Contains($line)) {
-              if (-not $cmake.Contains($anchor)) { throw 'CMake board list anchor not found' }
-              $cmake = $cmake.Replace($anchor, $anchor + "`r`n" + $line)
-            }
-          }
-          Set-Content $cmakePath $cmake -NoNewline
+          python tools/fceux-mappers-test/patch_fceux.py "$env:FCEUX_SRC"
 
       - name: Qt5 tool compatibility
         shell: pwsh
@@ -231,11 +120,7 @@ void Mapper540_Init(CartInfo *);
             }
           }
 
-          @'
-          FCEUX 2.7.0 mapper test build
-          Requested mappers: 45, 264, 287, 315, 344, 358, 393, 395, 540
-          Test build generated for Veix.
-          '@ | Set-Content 'dist\README.txt' -Encoding UTF8
+          'FCEUX 2.7.0 mapper test build: 45, 264, 287, 315, 344, 358, 393, 395, 540' | Set-Content 'dist\README.txt' -Encoding UTF8
 
       - name: Upload Windows test build
         uses: actions/upload-artifact@v4
