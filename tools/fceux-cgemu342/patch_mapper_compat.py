@@ -54,11 +54,23 @@ p = root / "src/boards/359.cpp"
 s = p.read_text(encoding="utf-8", errors="ignore").replace("\r\n", "\n")
 s = s.replace('#include "../fds_apu.h"', '#include "../fds.h"\nvoid FDSSoundStateAdd(void);', 1)
 s = s.replace("\tFDSSoundPower();", "\tFDSSoundReset();\n\tFDSSoundStateAdd();", 1)
+
+# FP_FASTAPASS is a newer FCEUmm compiler-attribute helper. The pinned FCEUX
+# MapIRQHook expects the same plain `void (int)` callback, so the attribute can
+# simply be omitted.
+s = s.replace(
+    "static void FP_FASTAPASS(1) M359CPUHook(int a)",
+    "static void M359CPUHook(int a)",
+    1,
+)
+
 if "fds_apu.h" in s or "FDSSoundPower();" in s:
     raise SystemExit("mapper 540 FDS API adaptation failed")
 if "FDSSoundStateAdd();" not in s:
     raise SystemExit("mapper 540 FDS state registration missing")
+if "FP_FASTAPASS" in s:
+    raise SystemExit("mapper 540 still uses unavailable FP_FASTAPASS")
 p.write_text(s, encoding="utf-8", newline="\n")
-print("patched: mapper 540 FDS sound API")
+print("patched: mapper 540 FDS sound API + CPU hook")
 
 print("MAPPER COMPAT PATCH COMPLETE")
