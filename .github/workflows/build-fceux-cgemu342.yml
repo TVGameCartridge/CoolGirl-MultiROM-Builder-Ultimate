@@ -53,6 +53,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python tools/fceux-cgemu342/patch_fceux.py "$env:FCEUX_SRC"
 
+      - name: Add required NES 2.0 mappers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/fceux-cgemu342/patch_mappers.py "$env:FCEUX_SRC"
+
       - name: Qt5 tool compatibility
         shell: pwsh
         run: |
