@@ -15,7 +15,7 @@ def once(old, new, label):
 once(
     '#include "NES/NesCpu.h"\n',
     '#include "NES/NesCpu.h"\n#include "NES/NesMemoryManager.h"\n'
-    '#include <fstream>\n#include <filesystem>\n#ifdef _WIN32\n#include <windows.h>\n#endif\n',
+    '#include <fstream>\n#include <filesystem>\n#ifdef _WIN32\n#include <process.h>\n#include <stdlib.h>\n#endif\n',
     "includes",
 )
 once(
@@ -116,25 +116,13 @@ launcher = r'''
 \t\t\tdst.close();
 \t\t\tif(!dst) return false;
 
-\t\t\twchar_t exePath[32768] = {};
-\t\t\tDWORD exeLen = GetModuleFileNameW(nullptr, exePath, (DWORD)(sizeof(exePath) / sizeof(exePath[0])));
-\t\t\tif(exeLen == 0 || exeLen >= (DWORD)(sizeof(exePath) / sizeof(exePath[0]))) return false;
-
-\t\t\tstd::wstring command = L"\"" + std::wstring(exePath) + L"\" \"" + outputPath.wstring() + L"\"";
-\t\t\tvector<wchar_t> cmd(command.begin(), command.end());
-\t\t\tcmd.push_back(L'\0');
-
-\t\t\tSTARTUPINFOW si = {};
-\t\t\tPROCESS_INFORMATION pi = {};
-\t\t\tsi.cb = sizeof(si);
-\t\t\tstd::wstring workDir = sourcePath.parent_path().wstring();
-\t\t\tBOOL ok = CreateProcessW(exePath, cmd.data(), nullptr, nullptr, FALSE, 0,
-\t\t\t\tnullptr, workDir.empty() ? nullptr : workDir.c_str(), &si, &pi);
-\t\t\tif(ok) {
-\t\t\t\tCloseHandle(pi.hThread);
-\t\t\t\tCloseHandle(pi.hProcess);
-\t\t\t\treturn true;
-\t\t\t}
+\t\t\twchar_t* exePathRaw = nullptr;
+\t\t\tif(_get_wpgmptr(&exePathRaw) != 0 || !exePathRaw || !*exePathRaw) return false;
+\t\t\tstd::wstring exePath(exePathRaw);
+\t\t\tstd::wstring childPath = outputPath.wstring();
+\t\t\tconst wchar_t* argv[] = { exePath.c_str(), childPath.c_str(), nullptr };
+\t\t\tintptr_t pid = _wspawnv(_P_NOWAIT, exePath.c_str(), argv);
+\t\t\tif(pid != -1) return true;
 \t\t} catch(...) {
 \t\t\treturn false;
 \t\t}
