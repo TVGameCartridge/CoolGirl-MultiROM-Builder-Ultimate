@@ -36,4 +36,20 @@ patch(
     "debugger.h token concatenation",
 )
 
+# On MinGW-w64 Windows, aligned_alloc is not provided by the Microsoft CRT in
+# the same way as on POSIX.  Use the Windows aligned allocation pair for both
+# MSVC and MinGW so allocation/free remain matched.
+patch(
+    "src/utils/memory.cpp",
+    '#ifdef _MSC_VER\n\tvoid *ret = _aligned_malloc(size,alignment);\n\t#else\n\tvoid *ret = aligned_alloc(alignment,size);\n\t#endif',
+    '#if defined(_MSC_VER) || defined(_WIN32)\n\tvoid *ret = _aligned_malloc(size,alignment);\n\t#else\n\tvoid *ret = aligned_alloc(alignment,size);\n\t#endif',
+    "memory.cpp aligned allocation on MinGW Windows",
+)
+patch(
+    "src/utils/memory.cpp",
+    '#ifdef _MSC_VER\n\t_aligned_free(ptr);\n\t#else\n\tfree(ptr);\n\t#endif',
+    '#if defined(_MSC_VER) || defined(_WIN32)\n\t_aligned_free(ptr);\n\t#else\n\tfree(ptr);\n\t#endif',
+    "memory.cpp aligned free on MinGW Windows",
+)
+
 print("MINGW COMPAT PATCH COMPLETE")
