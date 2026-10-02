@@ -5,14 +5,12 @@ root = Path(sys.argv[1]).resolve()
 p = root / "Core/NES/Mappers/JyCompany/JyCompany.h"
 s = p.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
 
-
 def once(old, new, label):
     global s
     if old in s:
         s = s.replace(old, new, 1)
     elif new not in s:
         raise SystemExit("mapper358 patch marker missing: " + label)
-
 
 once(
     "\tuint8_t _regRamValue = 0;\n\n\tuint16_t _lastPpuAddr = 0;",
@@ -30,97 +28,95 @@ once(
     "serialize",
 )
 
-old = "\tvoid UpdatePrgState()\n\t{\n\t\tbool invertBits = (_prgMode & 0x03) == 0x03;"
-new = r'''\tvoid UpdatePrgState()
+helpers = r'''
+\tuint16_t Mapper358PrgPage(uint16_t page)
 \t{
-\t\tbool invertBits = (_prgMode & 0x03) == 0x03;
-
-\t\tif(_romInfo.MapperID == 358) {
-\t\t\t// FCEUmm sync358(): PRG AND=0x1F, OR=(D003<<4)&~0x1F.
-\t\t\tuint16_t outer = (uint16_t)(_mapper358Outer << 4) & 0x7E0;
-\t\t\tuint8_t p0 = InvertPrgBits(_prgRegs[0], invertBits);
-\t\t\tuint8_t p1 = InvertPrgBits(_prgRegs[1], invertBits);
-\t\t\tuint8_t p2 = InvertPrgBits(_prgRegs[2], invertBits);
-\t\t\tuint8_t p3 = InvertPrgBits(_prgRegs[3], invertBits);
-\t\t\tuint8_t last = (_prgMode & 0x04) ? p3 : 0xFF;
-
-\t\t\tswitch(_prgMode & 0x03) {
-\t\t\t\tcase 0: {
-\t\t\t\t\tuint16_t page = (uint16_t)((((last & 0x1F) >> 2) | (outer >> 2)) << 2);
-\t\t\t\t\tSelectPrgPage4x(0, page);
-\t\t\t\t\tif(_enablePrgAt6000) SetCpuMemoryMapping(0x6000, 0x7FFF, (int16_t)((((p3 << 2) | 3) & 0x1F) | outer), PrgMemoryType::PrgRom);
-\t\t\t\t\tbreak;
-\t\t\t\t}
-\t\t\t\tcase 1: {
-\t\t\t\t\tuint16_t a = (uint16_t)((((p1 & 0x1F) >> 1) | (outer >> 1)) << 1);
-\t\t\t\t\tuint16_t b = (uint16_t)((((last & 0x1F) >> 1) | (outer >> 1)) << 1);
-\t\t\t\t\tSelectPrgPage2x(0, a);
-\t\t\t\t\tSelectPrgPage2x(1, b);
-\t\t\t\t\tif(_enablePrgAt6000) SetCpuMemoryMapping(0x6000, 0x7FFF, (int16_t)((((p3 << 1) | 1) & 0x1F) | outer), PrgMemoryType::PrgRom);
-\t\t\t\t\tbreak;
-\t\t\t\t}
-\t\t\t\tcase 2:
-\t\t\t\tcase 3:
-\t\t\t\t\tSelectPrgPage(0, (p0 & 0x1F) | outer);
-\t\t\t\t\tSelectPrgPage(1, (p1 & 0x1F) | outer);
-\t\t\t\t\tSelectPrgPage(2, (p2 & 0x1F) | outer);
-\t\t\t\t\tSelectPrgPage(3, (last & 0x1F) | outer);
-\t\t\t\t\tif(_enablePrgAt6000) SetCpuMemoryMapping(0x6000, 0x7FFF, (int16_t)((p3 & 0x1F) | outer), PrgMemoryType::PrgRom);
-\t\t\t\t\tbreak;
-\t\t\t}
-\t\t\tif(!_enablePrgAt6000) RemoveCpuMemoryMapping(0x6000, 0x7FFF);
-\t\t\treturn;
+\t\tif(_romInfo.MapperID != 358) {
+\t\t\treturn page;
 \t\t}
-'''.replace('\\t', '\t')
-once(old, new, "PRG")
+\t\tuint16_t base = ((uint16_t)_mapper358Outer << 4) & 0x0FE0;
+\t\treturn base | (page & 0x001F);
+\t}
 
-old = "\tuint16_t GetChrReg(int index)\n\t{\n\t\tif(_chrMode >= 2 && _mirrorChr && (index == 2 || index == 3)) {\n\t\t\tindex -= 2;\n\t\t}"
-new = r'''\tuint16_t GetChrReg(int index)
+\tuint16_t Mapper358ChrPage(uint16_t page)
 \t{
-\t\tif(_chrMode >= 2 && _mirrorChr && (index == 2 || index == 3)) {
-\t\t\tindex -= 2;
+\t\tif(_romInfo.MapperID != 358) {
+\t\t\treturn page;
 \t\t}
+\t\tuint16_t base = ((uint16_t)(_mapper358Outer & 0x01) << 8)
+\t\t\t| ((uint16_t)(_mapper358Outer & 0x0C) << 7);
+\t\tuint16_t mask = 0x00FF;
+\t\tif(_mapper358Outer & 0x20) {
+\t\t\tbase &= 0x0600;
+\t\t\tmask = 0x01FF;
+\t\t}
+\t\treturn base | (page & mask);
+\t}
+'''.replace('\\t','\t')
+marker = "\tvoid UpdatePrgState()\n\t{"
+if helpers not in s:
+    if marker not in s:
+        raise SystemExit("mapper358 patch marker missing: helpers")
+    s = s.replace(marker, helpers + "\n" + marker, 1)
 
-\t\tif(_romInfo.MapperID == 358) {
-\t\t\tuint16_t raw = _chrLowRegs[index] | ((uint16_t)_chrHighRegs[index] << 8);
-\t\t\tuint16_t andMask, orMask;
-\t\t\tif(_mapper358Outer & 0x20) {
-\t\t\t\tandMask = 0x1FF;
-\t\t\t\torMask = ((uint16_t)_mapper358Outer << 7) & 0x600;
-\t\t\t} else {
-\t\t\t\tandMask = 0x0FF;
-\t\t\t\torMask = (((uint16_t)_mapper358Outer << 8) & 0x100) | (((uint16_t)_mapper358Outer << 7) & 0x600);
-\t\t\t}
-\t\t\tuint8_t shift = 3 - (_chrMode & 3);
-\t\t\treturn (uint16_t)((raw & (andMask >> shift)) | (orMask >> shift));
-\t\t}
-'''.replace('\\t', '\t')
-once(old, new, "CHR")
+repls = {
+    "SelectPrgPage4x(0, (_prgMode & 0x04) ? prgRegs[3] : 0x3C);":
+        "SelectPrgPage4x(0, Mapper358PrgPage((_prgMode & 0x04) ? prgRegs[3] : 0x3C));",
+    "SetCpuMemoryMapping(0x6000, 0x7FFF, prgRegs[3] * 4 + 3, PrgMemoryType::PrgRom);":
+        "SetCpuMemoryMapping(0x6000, 0x7FFF, Mapper358PrgPage(prgRegs[3] * 4 + 3), PrgMemoryType::PrgRom);",
+    "SelectPrgPage2x(0, prgRegs[1] << 1);":
+        "SelectPrgPage2x(0, Mapper358PrgPage(prgRegs[1] << 1));",
+    "SelectPrgPage2x(1, (_prgMode & 0x04) ? prgRegs[3] : 0x3E);":
+        "SelectPrgPage2x(1, Mapper358PrgPage((_prgMode & 0x04) ? prgRegs[3] : 0x3E));",
+    "SetCpuMemoryMapping(0x6000, 0x7FFF, prgRegs[3] * 2 + 1, PrgMemoryType::PrgRom);":
+        "SetCpuMemoryMapping(0x6000, 0x7FFF, Mapper358PrgPage(prgRegs[3] * 2 + 1), PrgMemoryType::PrgRom);",
+    "SelectPrgPage(0, prgRegs[0]);":
+        "SelectPrgPage(0, Mapper358PrgPage(prgRegs[0]));",
+    "SelectPrgPage(1, prgRegs[1]);":
+        "SelectPrgPage(1, Mapper358PrgPage(prgRegs[1]));",
+    "SelectPrgPage(2, prgRegs[2]);":
+        "SelectPrgPage(2, Mapper358PrgPage(prgRegs[2]));",
+    "SelectPrgPage(3, (_prgMode & 0x04) ? prgRegs[3] : 0x3F);":
+        "SelectPrgPage(3, Mapper358PrgPage((_prgMode & 0x04) ? prgRegs[3] : 0x3F));",
+    "SetCpuMemoryMapping(0x6000, 0x7FFF, prgRegs[3], PrgMemoryType::PrgRom);":
+        "SetCpuMemoryMapping(0x6000, 0x7FFF, Mapper358PrgPage(prgRegs[3]), PrgMemoryType::PrgRom);",
+    "SelectChrPage8x(0, chrRegs[0] << 3);":
+        "SelectChrPage8x(0, Mapper358ChrPage(chrRegs[0] << 3));",
+    "SelectChrPage4x(0, chrRegs[_chrLatch[0]] << 2);":
+        "SelectChrPage4x(0, Mapper358ChrPage(chrRegs[_chrLatch[0]] << 2));",
+    "SelectChrPage4x(1, chrRegs[_chrLatch[1]] << 2);":
+        "SelectChrPage4x(1, Mapper358ChrPage(chrRegs[_chrLatch[1]] << 2));",
+    "SelectChrPage2x(0, chrRegs[0] << 1);":
+        "SelectChrPage2x(0, Mapper358ChrPage(chrRegs[0] << 1));",
+    "SelectChrPage2x(1, chrRegs[2] << 1);":
+        "SelectChrPage2x(1, Mapper358ChrPage(chrRegs[2] << 1));",
+    "SelectChrPage2x(2, chrRegs[4] << 1);":
+        "SelectChrPage2x(2, Mapper358ChrPage(chrRegs[4] << 1));",
+    "SelectChrPage2x(3, chrRegs[6] << 1);":
+        "SelectChrPage2x(3, Mapper358ChrPage(chrRegs[6] << 1));",
+    "SelectChrPage(i, chrRegs[i]);":
+        "SelectChrPage(i, Mapper358ChrPage(chrRegs[i]));",
+}
+for old,new in repls.items():
+    once(old,new,old[:48])
 
 once(
     "\t\t\t\tcase 0xD003:\n\t\t\t\t\t_mirrorChr = (value & 0x80) == 0x80;",
-    "\t\t\t\tcase 0xD003:\n\t\t\t\t\t_mapper358Outer = value;\n\t\t\t\t\t_mirrorChr = (value & 0x80) == 0x80;",
+    "\t\t\t\tcase 0xD003:\n\t\t\t\t\tif(_romInfo.MapperID == 358) { _mapper358Outer = value; }\n\t\t\t\t\t_mirrorChr = (value & 0x80) == 0x80;",
     "D003",
 )
-
 once(
     "\t\t\t\t\tuint16_t chrPage = _ntLowRegs[ntIndex] | (_ntHighRegs[ntIndex] << 8);\n\t\t\t\t\tuint32_t chrOffset = chrPage * 0x400 + (addr & 0x3FF);",
     "\t\t\t\t\tuint16_t chrPage = _ntLowRegs[ntIndex] | (_ntHighRegs[ntIndex] << 8);\n"
-    "\t\t\t\t\tif(_romInfo.MapperID == 358) {\n"
-    "\t\t\t\t\t\tuint16_t andMask, orMask;\n"
-    "\t\t\t\t\t\tif(_mapper358Outer & 0x20) { andMask = 0x1FF; orMask = ((uint16_t)_mapper358Outer << 7) & 0x600; }\n"
-    "\t\t\t\t\t\telse { andMask = 0x0FF; orMask = (((uint16_t)_mapper358Outer << 8) & 0x100) | (((uint16_t)_mapper358Outer << 7) & 0x600); }\n"
-    "\t\t\t\t\t\tchrPage = (chrPage & andMask) | orMask;\n"
-    "\t\t\t\t\t}\n"
+    "\t\t\t\t\tchrPage = Mapper358ChrPage(chrPage);\n"
     "\t\t\t\t\tuint32_t chrOffset = chrPage * 0x400 + (addr & 0x3FF);",
     "nametable",
 )
-
 once(
-    "\t\tif(_romInfo.MapperID == 209) {\n\t\t\tswitch(addr & 0x2FF8) {",
-    "\t\tif(_romInfo.MapperID == 209 || (_romInfo.MapperID == 358 && (_mapper358Outer & 0x80) && _chrMode == 1)) {\n\t\t\tswitch(addr & 0x2FF8) {",
+    "\t\tif(_romInfo.MapperID == 209) {",
+    "\t\tif(_romInfo.MapperID == 209 || (_romInfo.MapperID == 358 && (_mapper358Outer & 0x80) && _chrMode == 1)) {",
     "MMC4 latch",
 )
 
 p.write_text(s, encoding="utf-8", newline="\n")
-print("mapper 358 exact JY multicart wiring patched")
+print("mapper 358 JY outer banking patched in 8K/1K page units")

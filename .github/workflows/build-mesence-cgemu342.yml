@@ -37,13 +37,14 @@ jobs:
           git -C mesen-src checkout --detach FETCH_HEAD
           "MESEN_SHA=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Add mapper support
+      - name: Add mapper support and native 342 launcher
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           python tools/mesence-cgemu342/patch_mesen.py mesen-src
           python tools/mesence-cgemu342/patch_mapper358.py mesen-src
           python tools/mesence-cgemu342/patch_coolgirl342.py mesen-src
+          python tools/mesence-cgemu342/patch_cgemu342_launcher.py mesen-src
           Set-Content -Path mesen-src/UI/Dependencies/Internal/BuildSha.txt -Value $env:MESEN_SHA -Encoding ascii
 
       - name: Get librashader
@@ -78,7 +79,7 @@ jobs:
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           $exe = 'mesen-src/build/TmpReleaseBuild/Mesen.exe'
           if (-not (Test-Path $exe)) { throw 'Mesen.exe was not produced' }
-          Copy-Item $exe 'dist/MesenCE-CGEMU342.exe' -Force
+          Copy-Item $exe 'dist/MesenCE-CGEMU342-v3.exe' -Force
           @'
           @echo off
           cd /d "%~dp0"
@@ -87,20 +88,29 @@ jobs:
             pause
             exit /b 1
           )
-          "MesenCE-CGEMU342.exe" "multirom.nes"
+          "MesenCE-CGEMU342-v3.exe" "multirom.nes"
           '@ | Set-Content 'dist/START_MULTIROM.bat' -Encoding ASCII
           @'
-          MesenCE custom Windows build for CoolGirl MultiROM Builder Ultimate.
-          Added mapper entries: 315, 342, 344, 358, 393, 395, 540.
-          Existing MesenCE mapper support retained, including 45, 264 and 287.
-          Mapper 342 includes native CoolGirl banking/configuration support and additional inner mapper modes.
-          Mapper 358 includes YY860606C/JY multicart outer PRG/CHR/nametable wiring.
+          MesenCE CGEMU342 Windows v3
+          Mapper 264 is unchanged.
+
+          Mapper 342:
+          - native CoolGirl mapper support
+          - CGEMU342 mailbox $07F0-$07F2
+          - automatic payload extraction
+          - directory mapper/submapper restored to NES header
+          - selected child starts as a separate ROM using this Mesen build
+
+          Mapper 358:
+          - JY ASIC core
+          - corrected outer PRG transform in final 8 KiB page units
+          - corrected outer CHR/nametable transform in final 1 KiB page units
           '@ | Set-Content 'dist/README.txt' -Encoding UTF8
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: MesenCE-CGEMU342-Windows
+          name: MesenCE-CGEMU342-Windows-v3
           path: dist/**
           if-no-files-found: error
           retention-days: 30
