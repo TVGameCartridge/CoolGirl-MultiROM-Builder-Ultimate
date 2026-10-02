@@ -1,0 +1,100 @@
+name: Build MesenCE CGEMU342 Windows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-mesence-cgemu342.yml'
+      - 'tools/mesence-cgemu342/**'
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 60
+    steps:
+      - name: Checkout patch files
+        uses: actions/checkout@v4
+
+      - name: Install .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.x
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v3
+        with:
+          msbuild-architecture: x64
+
+      - name: Checkout MesenCE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 https://github.com/nesdev-org/MesenCE.git mesen-src
+          $sha = (git -C mesen-src rev-parse HEAD).Trim()
+          "MESEN_SHA=$sha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Add mapper support
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/mesence-cgemu342/patch_mesen.py mesen-src
+          Set-Content -Path mesen-src/UI/Dependencies/Internal/BuildSha.txt -Value $env:MESEN_SHA -Encoding ascii
+
+      - name: Get librashader
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest 'https://nightly.link/SourMesen/librashader/workflows/build/Mesen/librashader-x64-windows.zip' -OutFile librashader.zip -MaximumRedirection 10
+          Expand-Archive librashader.zip -DestinationPath librashader -Force
+          $dll = Get-ChildItem librashader -Recurse -Filter librashader.dll | Select-Object -First 1
+          if (-not $dll) { throw 'librashader.dll not found' }
+          Copy-Item $dll.FullName mesen-src/UI/Dependencies/librashader.dll -Force
+
+      - name: Restore
+        working-directory: mesen-src
+        shell: pwsh
+        run: dotnet restore -p:TargetFramework=net10.0 -r win-x64 -p:PublishAot=false -p:BuildWithNetFrameworkHostedCompiler=true
+
+      - name: Build native core and UI
+        working-directory: mesen-src
+        shell: pwsh
+        run: msbuild -nologo -m -p:Configuration=Release -p:Platform=x64 -t:Clean,UI -p:TargetFramework=net10.0 -p:OptimizeUi=true
+
+      - name: Publish single-file Windows EXE
+        working-directory: mesen-src
+        shell: pwsh
+        run: dotnet publish --no-restore -c Release -p:PublishAot=false -p:SelfContained=false -p:PublishSingleFile=true -p:OptimizeUi=true '-p:Platform=Any CPU' -p:TargetFramework=net10.0 -r win-x64 Mesen.sln /p:PublishProfile=UI\Properties\PublishProfiles\Release.pubxml
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $exe = 'mesen-src/build/TmpReleaseBuild/Mesen.exe'
+          if (-not (Test-Path $exe)) { throw 'Mesen.exe was not produced' }
+          Copy-Item $exe 'dist/MesenCE-CGEMU342.exe' -Force
+          @'
+          @echo off
+          cd /d "%~dp0"
+          if not exist "multirom.nes" (
+            echo multirom.nes not found.
+            pause
+            exit /b 1
+          )
+          "MesenCE-CGEMU342.exe" "multirom.nes"
+          '@ | Set-Content 'dist/START_MULTIROM.bat' -Encoding ASCII
+          @'
+          MesenCE custom Windows build for CoolGirl MultiROM Builder Ultimate.
+          Added mapper entries: 315, 342, 344, 358, 393, 395, 540.
+          Existing MesenCE mapper support retained, including 45, 264 and 287.
+          Mapper 342 includes native CoolGirl banking/configuration support.
+          '@ | Set-Content 'dist/README.txt' -Encoding UTF8
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: MesenCE-CGEMU342-Windows
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 30
